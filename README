@@ -1,0 +1,12 @@
+NFJ - calculate fractional usage of splice junctions
+====================================================
+
+Author: Mark Fiers <mark.fiers.42@gmail.com>
+
+
+Typical run
+
+* nfj collect_from_bam - Collect splice counts
+* nfj count_stats - calculate statistics on the count table - for later filtering
+* nfj to_
+  
