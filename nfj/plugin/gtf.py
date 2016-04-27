@@ -9,7 +9,6 @@ import numpy as np
 import leip
 from sqlalchemy import create_engine, Index, MetaData 
 
-
 @leip.flag('--debug')
 @leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
 @leip.arg('gtf')
@@ -50,15 +49,15 @@ def load_gtf(app, args):
     exons['gene_id'] = exons['attrs'].apply(_find_thing, what='gene_id')
     del exons['attrs']
     
-#    for transcript in exons['transcript_id'].unique():
-    for geneid in ['ENSMUSG00000025902']:
+    # generate a per gene collection of exons, junctions & biotypes
+    for geneid in ['ENSMUSG00000033845']:
         xtable = {}
         jtable = {}
         btypes = defaultdict(lambda: set())
         xt = exons[exons['gene_id'] == geneid]
         for transid in xt['transcript_id'].unique():
             xtt = xt[xt['transcript_id'] == transid]
-            biotype = list(xtt['transcript_biotype'].unique())
+            biotype = list(xtt['transcript_biotype'].unique())                
             assert len(biotype) == 1
             biotype = biotype[0]
             exon_coords = sorted([tuple(sorted((x['start'],x['stop'])))
@@ -68,13 +67,18 @@ def load_gtf(app, args):
             jtable[transid] = exon_sets
             btypes[biotype].update(set(exon_coords))
 
-        exon2biotype = defaultdict(set)
+        #invert - exon->biotype table
+        exon2biotype = defaultdict(set)        
         for b in btypes:
             for x in btypes[b]:
                 exon2biotype[x].add(b)
+
         
         for transid in jtable:
-            print(
+            for jstart, jstop in jtable[transid]:
+                print(transid)
+                print(' - ', jstart,exon2biotype[jstart])
+                print(' - ', jstop,exon2biotype[jstop])
             
         exit()
     exons = exons[exons['gene_name'].str.contains('Sox17')]
