@@ -1,57 +1,50 @@
 #!/usr/bin/env python
 
-import pandas as pd
 import logging
-from sqlalchemy import create_engine, Index, MetaData 
 import leip
 
 lg = logging.getLogger(__name__)
-
     
-@leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
+@leip.arg('--db', default='nfj')
 @leip.arg('-n', '--number_to_process', type=int)
-@leip.flag('-x', '--exponent', help='convert normalized count values '
-           'from log space to count space')
 @leip.command
 def fraction(app, args):
     """Calculate fractional junction usgae"""
 
+    import pandas as pd
+    import numpy as np
+
+    from nfj import util
+    
     DEBUG = False
     debug_no = 10000
     
-    engine = create_engine(args.datafile)
-    lg.info('load from: %s', args.datafile)
+    lg.info('load from db: %s', args.db)
 
-    if DEBUG:
-        stats = pd.read_sql('select * from junction_stats limit %d' % debug_no,
-                            engine, index_col='index')
-    else:
-        stats = pd.read_sql_table('junction_stats',
-                            engine, index_col='index')
+    stats = util.load(args.db, 'junction_stats')
+    annot = util.load(args.db, 'junction_annotation')
+
     lg.info('loaded %d stats records', len(stats))
 
     lg.info('load normalized counts')
-    if DEBUG:
-        d = pd.read_sql('select * from normcounts limit %d' % debug_no,
-                        engine, index_col='index')
-    else:
-        d = pd.read_sql_table('normcounts',
-                              engine, index_col='index')
+    d = util.load(args.db, 'normcounts')
 
-
+    
     assert list(stats.index) == list(d.index)
+    assert list(stats.index) == list(annot.index)
 
-    if args.exponent:
-        lg.info("calculating exponent")
-        d = 2 ** d
+    stats = pd.concat([stats, annot], axis=1)
+    def _gene_find(row):
+        e = row['effect']
+        if not isinstance(e, (list, tuple)):
+            return ""
+        else:
+            return "__".join(sorted(set([x[1] for x in e])))
 
-    if d.min().min() < 0:
-        lg.error("normalized count table has negative values")
-        lg.error("is this log scaled data?? Used voom? If so,")
-        lg.error("try running with -x")
-        exit()
+    lg.info("extract gene name")
+    stats['gene'] = stats.apply(_gene_find, axis=1)
 
-    assert list(d.index) == list(stats.index)
+    assert d.min().min() >= 0
 
     def find_forward(r):
         rr = r.split('_')
@@ -163,15 +156,11 @@ def fraction(app, args):
     # dfi = dfi[z >= 0.01]
     # lg.info('fraction table after removing uninformative junctions: %s', str(dfi.shape))
     
-    if DEBUG: exit()
-    if not DEBUG:
-        lg.info('start writing fraction data')
-        df.to_sql('fraction', engine, if_exists='replace')
-        lg.info('start writing informative fraction data')
-        dfi.to_sql('fraction_inf', engine, if_exists='replace')
-        lg.info('start writing junction stats data')
-        stats.to_sql('junction_stats', engine, if_exists='replace')
-    else:
-        dfi.to_csv('debug_fraction_inf.tsv', sep="\t")
-        df.to_csv('debug_fraction.tsv', sep="\t")
-        stats.to_csv('debug_fraction_stats.tsv', sep="\t")
+    lg.info('start writing fraction data')
+    util.save(args.db, fraction=df, fraction_inf=dfi, stats2=stats)
+    
+    # df.to_sql('fraction', engine, if_exists='replace')
+    # lg.info('start writing informative fraction data')
+    # dfi.to_sql('fraction_inf', engine, if_exists='replace')
+    # lg.info('start writing junction stats data')
+    # stats.to_sql('junction_stats', engine, if_exists='replace')

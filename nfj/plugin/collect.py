@@ -5,32 +5,37 @@ import os
 import re
 
 import leip
-import pandas as pd
-
-from sqlalchemy import create_engine, Index, MetaData 
+from path import Path
 
 lg = logging.getLogger(__name__)
 
 GTF = None
 
 
+@leip.arg('--db', default='./nfj')
 @leip.arg('-n', '--nofiles', type=int)
-@leip.arg('-N', '--reads_to_process', default=1e10, type=int)
+@leip.arg('-N', '--junctions_to_process', default=1e20, type=int)
 @leip.arg('-r', '--regex', help='regex to identify sample id')
-@leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
 @leip.arg('indir')
 @leip.command
 def collect_from_star(app, args):
 
-    engine = create_engine(args.datafile)
-
+    import pandas as pd
+    import numpy as np
+    from nfj import util
+    
     if args.regex:
+        lg.info("using regex: %s" % args.regex)
         re_find_name = re.compile(args.regex)
 
     def _get_junction_name(row):
         return '%(chrom)s_%(start)s_%(stop)s' % row
 
     rv = {}
+    colnames = '''chrom start stop strand intron_motif
+                  annotated unique multi max_overhang'''.split()
+    dtypes = dict(zip(colnames, [np.uint32] * len(colnames)))
+    dtypes['chrom'] = str
 
     for i, infile in enumerate(glob.glob('%s/*SJ.out.tab' % args.indir)):
         if args.nofiles and i >= args.nofiles:
@@ -38,10 +43,9 @@ def collect_from_star(app, args):
 
         name = os.path.basename(infile).split('SJ')[0]
         lg.info("Processing: %s", name)
-        colnames = '''chrom start stop strand intron_motif
-                      annotated unique multi max_overhang'''.split()
-
-        d = pd.read_csv(infile, sep="\t", names=colnames)
+        
+        d = pd.read_csv(infile, sep="\t", names=colnames, dtype=dtypes,
+                        nrows=int(args.junctions_to_process))
             
         d.index = d.apply(_get_junction_name, axis=1)
         rv[name] = d['unique']
@@ -55,6 +59,7 @@ def collect_from_star(app, args):
     rvt = rv.T
 
     def samplify(f):
+        lg.info('find group name in: %s', f)
         regmatch = re_find_name.search(f)
         sample = regmatch.groups()[0]
         lg.info("filename '%s' -> sample '%s'", f, sample)
@@ -67,8 +72,7 @@ def collect_from_star(app, args):
     lg.info("%d junctions observed", len(rv))
     
     # write to disk - raw count table
-    lg.info('save to %s', args.datafile)
-    rv.to_sql('counts', engine, if_exists='replace')
+    util.save(args.db, counts=rv)
 
 
 @leip.arg('-c', '--cutoff', help='fraction has to have at least <cutoff> ' +

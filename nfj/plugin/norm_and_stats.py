@@ -1,20 +1,18 @@
 
-
 import logging
 import leip
-from sqlalchemy import create_engine
 import pandas as pd
+
+from nfj import util
 
 lg = logging.getLogger(__name__)
 
-@leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
+@leip.arg('--db', default='nfj')
 @leip.command
 def stats(app, args):
     """Calculate stats on the raw & normalized counts table"""
 
-    engine = create_engine(args.datafile)
-    
-    counts = pd.read_sql('counts', engine, index_col='index')
+    counts= util.load(args.db, 'counts')
     no_samples = counts.shape[1]
 
     lg.info("read %d records", len(counts))
@@ -42,14 +40,14 @@ def stats(app, args):
     lg.info('raw counts: coefficient of variation')
     cstats['counts_cv'] = cstats['counts_std']  / cstats['counts_mean']
 
-    for h in [5, 10]:
-        lg.info('raw counts: calculate high_%02d' % h)
-        if no_samples < h-1:
-            break
-        cstats['counts_high_%02d' % h] = counts.apply(lambda x: x.sort_values()[-h], axis=1)
+#    for h in [5, 10]:
+#        lg.info('raw counts: calculate high_%02d' % h)
+#        if no_samples < h-1:
+#            break
+#        cstats['counts_high_%02d' % h] = counts.apply(lambda x: x.sort_values()[-h], axis=1)
 
     lg.info("read normalized count table")
-    normcounts = pd.read_sql('normcounts', engine, index_col='index')
+    normcounts= util.load(args.db, 'normcounts')
 
     lg.info("normalized counts: read %d records", len(normcounts))
     
@@ -68,11 +66,9 @@ def stats(app, args):
     lg.info('normalized counts: coefficient of variation')
     cstats['norm_cv'] = cstats['norm_std']  / cstats['norm_mean']
 
-    lg.info("saving stats to %s", args.datafile)
-    cstats.to_sql('junction_stats', engine, if_exists='replace')
+    util.save(args.db, junction_stats=cstats)
+
     
-
-
 RSCRIPT="""
 library(edgeR)
 library(limma)
@@ -84,14 +80,13 @@ v = voom(dge, design=NULL, plot=FALSE)
 write.table(v$E, '_tmp_voom_output.tsv', sep="\t")
 """
     
-@leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
+@leip.arg('--db', default='nfj')
 @leip.command
-def norm_voom(app, args):
+def voom(app, args):
     "Normalize using Limma's voom"
     from sh import Rscript
 
-    engine = create_engine(args.datafile)
-    counts = pd.read_sql('counts', engine, index_col='index')
+    counts= util.load(args.db, 'counts')
     lg.info("read %d records", len(counts))
     
     lg.info("write raw counts to tmp file")
@@ -102,17 +97,20 @@ def norm_voom(app, args):
 
     lg.info("read R output")
     v = pd.read_csv('_tmp_voom_output.tsv', sep="\t")
+
+    #back to count space (from log space)
+    v = 2 ** v
     
     lg.info("Write to the database")
-    v.to_sql('normcounts', engine, if_exists='replace')
-
+    util.save(args.db, normcounts=v)
 
     
 @leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
 @leip.command
-def norm_jpm(app, args):
+def jpm(app, args):
     "Normalize to junctions per million (like RPM)"
-    
+    lg.critical("not implemented")
+    exit(-1)
     engine = create_engine(args.datafile)
     counts = pd.read_sql('counts', engine, index_col='index')
     lg.info("read %d records", len(counts))

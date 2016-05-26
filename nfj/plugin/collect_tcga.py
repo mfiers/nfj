@@ -13,7 +13,7 @@ lg = logging.getLogger(__name__)
 GTF = None
 
 
-@leip.arg('-d', '--datafile', default='sqlite:///nfj.db')
+@leip.arg('--db', default='./nfj')
 @leip.arg('-s', '--sdrf', default='magetab sdrf file')
 @leip.arg('indir')
 @leip.command
@@ -22,7 +22,7 @@ def collect_from_tcga(app, args):
     Collect from tcga precalculated junction count tables
     """
 
-    engine = create_engine(args.datafile)
+    from nfj import util
 
     rv = {}
 
@@ -59,8 +59,8 @@ def collect_from_tcga(app, args):
     lg.info("%d junctions observed", len(rv))
     
     # write to disk - raw count table
-    lg.info('save to %s', args.datafile)
-    rv.to_sql('counts', engine, if_exists='replace')
+    lg.info('save to %s', args.db)
+    util.save(args.db, counts=rv)
 
 
 # @leip.arg('-c', '--cutoff', help='fraction has to have at least <cutoff> ' +
