@@ -1,6 +1,8 @@
 
 import logging
+
 import warnings
+warnings.filterwarnings('ignore', category = UserWarning, module="matplotlib")
 
 import leip
 
@@ -26,6 +28,145 @@ def rowify(rowdb, new_item, spacer=2):
     else:
         rowdb.append([new_item])
         return len(rowdb)-1
+
+def plot_get_data(app, args):
+    
+    import pandas as pd
+
+    class DUMMY: pass
+    d = DUMMY()
+    
+    d.gene = args.gene
+
+    d.stats = util.load(args.db, 'stats2')
+    lg.info("loaded stats: %s", d.stats.shape)
+    d.ncounts = util.load(args.db, 'normcounts')
+    lg.info("loaded normalized counts: %s", d.ncounts.shape)
+    d.fraction = util.load(args.db, 'fraction')
+    lg.info("loaded fractions: %s", d.fraction.shape)
+    d.genedb = util.load(args.gtfdb, 'gene')
+    lg.info("loaded genes: %s", d.genedb.shape)
+    
+    #get gene information
+    d.gg = d.genedb[d.genedb['gene_name'] == args.gene]
+    if len(d.gg) == 0:
+        lg.critical('could not find gene'); exit(-1)
+    elif len(d.gg) > 1:
+        lg.critical('multiple gene records'); exit(-1)
+    d.gg = d.gg.iloc[0]
+    d.start, d.stop = sorted((d.gg['start'], d.gg['stop']))
+    d.start -= int(args.flank)
+    d.stop += int(args.flank)
+    lg.info("plot start: %d" % d.start)
+    lg.info("plot stop: %d" % d.stop)
+
+    #get junction stats
+    d.ss = d.stats[ ( d.stats['chrom'] == d.gg['chr'] )
+                    & ( d.stats['start'] < d.stop )
+                    & ( d.stats['stop'] > d.start ) ]
+    lg.info("junction stat records selected: %s" % len(d.ss))
+
+    d.template = pd.read_csv(args.template, header=None, sep="\t", index_col=0)\
+      .iloc[:,0].astype(int).sort_values()
+      
+    d.nn = d.ncounts.loc[d.ss.index, d.template.index]
+    lg.info("counts selected: %d" % len(d.nn))
+
+    d.ff = pd.concat([d.fraction.loc[d.ss['forward']],
+                      d.fraction.loc[d.ss['reverse']]])
+    lg.info("fractions selected: %d" % len(d.ff))
+    
+    return d
+
+@leip.flag('-n', '--remove_non_informative')
+@leip.arg('--db', default='nfj')
+@leip.arg('--gtfdb', default='gtf')
+@leip.arg('--flank', default=1e4, type=float)
+@leip.arg('--ncutoff', type=float)
+@leip.arg('-H', '--image_height', type=float, default=10)
+@leip.arg('gene')
+@leip.arg('template')
+@leip.command
+def plot_frac(app, args):
+
+    import pandas as pd
+    import numpy as np
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    import matplotlib.gridspec as gridspec
+    from matplotlib.path import Path
+    import seaborn as sns
+
+    d = plot_get_data(app, args)
+    title = ['nfj', 'frac', d.gene]
+    
+    if args.ncutoff:
+        d.nn = d.nn[d.nn.sum(1) >= args.ncutoff]
+        title.extend(('ncutoff', args.ncutoff))
+        lg.info("mean row cutoff: %.2f - %d records left", args.ncutoff, len(d.nn))
+        lg.info("reselecting fractions")
+        d.ss = d.ss.loc[d.nn.index]
+        d.ff = pd.concat([d.fraction.loc[d.ss['forward']],
+                      d.fraction.loc[d.ss['reverse']]])
+        lg.info(" - stats records left: %s", len(d.ss))
+        lg.info(" - fraction records left: %s", len(d.ff))
+
+    if args.remove_non_informative:
+        lg.info("removing non informative junctions")
+        d.ff = d.ff[d.ff.min(1) < 0.95]
+        d.ff = d.ff[d.ff.max(1) > 0.05]
+        lg.info(" - %d fractions left", len(d.ff))
+        
+    plt.figure(figsize=(10,args.image_height))
+    plt.title(" ".join(map(str, title)))
+
+    plt.pcolormesh(d.ff.as_matrix(), vmin=0, vmax=1, cmap=plt.cm.viridis)
+    plt.colorbar()
+    plt.xticks(0.5 + np.arange(len(d.ff.columns)),
+               d.ff.columns, fontsize=8, rotation=90, ha='center')
+    plt.tight_layout()
+    plt.savefig(".".join(map(str, title)) + '.png', dpi=200)
+    
+@leip.flag('-z', '--zscore')
+@leip.arg('--db', default='nfj')
+@leip.arg('--gtfdb', default='gtf')
+@leip.arg('--flank', default=1e4, type=float)
+@leip.arg('--ncutoff', type=float)
+@leip.arg('-H', '--image_height', type=float, default=10)
+@leip.arg('gene')
+@leip.arg('template')
+@leip.command
+def plot_count(app, args):
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+        import matplotlib.gridspec as gridspec
+        from matplotlib.path import Path
+        import seaborn as sns
+
+    d = plot_get_data(app, args)
+    title = ['nfj', 'count', d.gene]
+    
+    if args.ncutoff:
+        d.nn = d.nn[d.nn.sum(1) >= args.ncutoff]
+        title.extend(('ncutoff', args.ncutoff))
+        lg.info("mean row cutoff: %.2f - %d records left", args.ncutoff, len(d.nn))
+
+    if args.zscore:
+        title.append('zscore')
+        d.nn = d.nn.subtract(d.nn.mean(1), axis=0).divide(d.nn.std(1), axis=0)
+        lg.info("zscore normalized rows")
+        
+    plt.figure(figsize=(10,args.image_height))
+    plt.title(" ".join(map(str, title)))
+    sns.heatmap(d.nn)
+    plt.tight_layout()
+    plt.savefig(".".join(map(str, title)) + '.png', dpi=200)
+    
 
 @leip.arg('--db', default='nfj')
 @leip.arg('--gtfdb', default='gtf')
