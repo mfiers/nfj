@@ -1,6 +1,7 @@
 
-import logging
 
+import logging
+import sys
 import warnings
 warnings.filterwarnings('ignore', category = UserWarning, module="matplotlib")
 
@@ -35,9 +36,18 @@ def plot_get_data(app, args):
 
     class DUMMY: pass
     d = DUMMY()
-    
-    d.gene = args.gene
 
+    if args.gene is None:
+        line = sys.stdin.readline()
+        ls = line.strip().split("\t")
+        d.junction = ls[0]
+
+        lg.info("junction of interest: %s", d.junction)
+        d.gene = d.junction.split('__')[2].split('_')[0]
+    else:
+        d.gene = args.gene
+
+    lg.info('Looking at gene: %s', d.gene)
     d.stats = util.load(args.db, 'stats2')
     lg.info("loaded stats: %s", d.stats.shape)
     d.ncounts = util.load(args.db, 'normcounts')
@@ -48,12 +58,13 @@ def plot_get_data(app, args):
     lg.info("loaded genes: %s", d.genedb.shape)
     
     #get gene information
-    d.gg = d.genedb[d.genedb['gene_name'] == args.gene]
+    d.gg = d.genedb[d.genedb['gene_name'] == d.gene]
     if len(d.gg) == 0:
         lg.critical('could not find gene'); exit(-1)
     elif len(d.gg) > 1:
         lg.critical('multiple gene records'); exit(-1)
     d.gg = d.gg.iloc[0]
+    lg.info('found gene in db: %s:%d-%d', d.gg['chr'], d.gg['start'], d.gg['stop'])
     d.start, d.stop = sorted((d.gg['start'], d.gg['stop']))
     d.start -= int(args.flank)
     d.stop += int(args.flank)
@@ -61,6 +72,9 @@ def plot_get_data(app, args):
     lg.info("plot stop: %d" % d.stop)
 
     #get junction stats
+    if args.ucsc:
+        d.gg['chr'] = 'chr' + d.gg['chr']
+
     d.ss = d.stats[ ( d.stats['chrom'] == d.gg['chr'] )
                     & ( d.stats['start'] < d.stop )
                     & ( d.stats['stop'] > d.start ) ]
@@ -74,17 +88,21 @@ def plot_get_data(app, args):
 
     d.ff = pd.concat([d.fraction.loc[d.ss['forward']],
                       d.fraction.loc[d.ss['reverse']]])
+    d.ff = d.ff.loc[:,d.template.index]
     lg.info("fractions selected: %d" % len(d.ff))
     
     return d
 
-@leip.flag('-n', '--remove_non_informative')
+
+@leip.flag('-x', '--no_xaxis_labels')
+@leip.flag('--ucsc')
+@leip.flag('cluster')
 @leip.arg('--db', default='nfj')
 @leip.arg('--gtfdb', default='gtf')
 @leip.arg('--flank', default=1e4, type=float)
 @leip.arg('--ncutoff', type=float)
 @leip.arg('-H', '--image_height', type=float, default=10)
-@leip.arg('gene')
+@leip.arg('gene', nargs='?')
 @leip.arg('template')
 @leip.command
 def plot_frac(app, args):
@@ -99,6 +117,7 @@ def plot_frac(app, args):
     import seaborn as sns
 
     d = plot_get_data(app, args)
+    
     title = ['nfj', 'frac', d.gene]
     
     if args.ncutoff:
@@ -121,17 +140,114 @@ def plot_frac(app, args):
     plt.figure(figsize=(10,args.image_height))
     plt.title(" ".join(map(str, title)))
 
-    plt.pcolormesh(d.ff.as_matrix(), vmin=0, vmax=1, cmap=plt.cm.viridis)
+    plt.pcolormesh(d.ff.as_matrix(), vmin=0, vmax=1, cmap=plt.cm.rainbow)
     plt.colorbar()
     plt.xticks(0.5 + np.arange(len(d.ff.columns)),
                d.ff.columns, fontsize=8, rotation=90, ha='center')
+
+    tmpl = d.template
+    tmpl = (tmpl / tmpl.max()) + len(d.ff.index) + 1
+    plt.plot(0.5+np.arange(len(d.nn.columns)), tmpl)
+    plt.ylim(0, len(d.ff.index) + 2.5)
+    plt.xlim(0, len(d.ff.columns))
+    yticks = [x for x in d.ff.index]
+    if hasattr(d, 'junction'):
+        if d.junction in yticks:
+            lg.info("junction of interest is in the plot!")
+        yticks = [ '*' + x if x == d.junction else x
+                  for x in yticks]
+
+    plt.yticks(0.5 + np.arange(len(d.ff.index)),
+               yticks + ['', 'template'], fontsize=8)
+
+    if args.no_xaxis_labels:
+        lg.info("removing xaxis labels")
+        plt.xticks([])
+    
     plt.tight_layout()
     plt.savefig(".".join(map(str, title)) + '.png', dpi=200)
-    
-@leip.flag('-z', '--zscore')
+
+
+@leip.flag('-n', '--remove_non_informative')
+@leip.flag('-x', '--no_xaxis_labels')
+@leip.flag('--ucsc')
+@leip.flag('cluster')
 @leip.arg('--db', default='nfj')
 @leip.arg('--gtfdb', default='gtf')
 @leip.arg('--flank', default=1e4, type=float)
+@leip.arg('--ncutoff', type=float)
+@leip.arg('-H', '--image_height', type=float, default=10)
+@leip.arg('gene', nargs='?')
+@leip.arg('template')
+@leip.command
+def plot_frac(app, args):
+
+    import pandas as pd
+    import numpy as np
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    import matplotlib.gridspec as gridspec
+    from matplotlib.path import Path
+    import seaborn as sns
+
+    d = plot_get_data(app, args)
+    
+    title = ['nfj', 'frac', d.gene]
+    
+    if args.ncutoff:
+        d.nn = d.nn[d.nn.sum(1) >= args.ncutoff]
+        title.extend(('ncutoff', args.ncutoff))
+        lg.info("mean row cutoff: %.2f - %d records left", args.ncutoff, len(d.nn))
+        lg.info("reselecting fractions")
+        d.ss = d.ss.loc[d.nn.index]
+        d.ff = pd.concat([d.fraction.loc[d.ss['forward']],
+                      d.fraction.loc[d.ss['reverse']]])
+        lg.info(" - stats records left: %s", len(d.ss))
+        lg.info(" - fraction records left: %s", len(d.ff))
+
+    if args.remove_non_informative:
+        lg.info("removing non informative junctions")
+        d.ff = d.ff[d.ff.min(1) < 0.95]
+        d.ff = d.ff[d.ff.max(1) > 0.05]
+        lg.info(" - %d fractions left", len(d.ff))
+        
+    plt.figure(figsize=(10,args.image_height))
+    plt.title(" ".join(map(str, title)))
+
+    plt.pcolormesh(d.ff.as_matrix(), vmin=0, vmax=1, cmap=plt.cm.rainbow)
+    plt.colorbar()
+    plt.xticks(0.5 + np.arange(len(d.ff.columns)),
+               d.ff.columns, fontsize=8, rotation=90, ha='center')
+
+    tmpl = d.template
+    tmpl = (tmpl / tmpl.max()) + len(d.ff.index) + 1
+    plt.plot(0.5+np.arange(len(d.nn.columns)), tmpl)
+    plt.ylim(0, len(d.ff.index) + 2.5)
+    plt.xlim(0, len(d.ff.columns))
+    yticks = [x for x in d.ff.index]
+    if hasattr(d, 'junction'):
+        if d.junction in yticks:
+            lg.info("junction of interest is in the plot!")
+        yticks = [ '*' + x if x == d.junction else x
+                  for x in yticks]
+
+    plt.yticks(0.5 + np.arange(len(d.ff.index)),
+               yticks + ['', 'template'], fontsize=8)
+
+    if args.no_xaxis_labels:
+        lg.info("removing xaxis labels")
+        plt.xticks([])
+    
+    plt.tight_layout()
+    plt.savefig(".".join(map(str, title)) + '.png', dpi=200)
+
+@leip.flag('-z', '--zscore')
+@leip.flag('-x', '--no_xaxis_labels')
+@leip.arg('--db', default='nfj')
+@leip.arg('--gtfdb', default='gtf')
+@leip.arg('--flank', default=1e4, type=float)
+@leip.flag('--ucsc')
 @leip.arg('--ncutoff', type=float)
 @leip.arg('-H', '--image_height', type=float, default=10)
 @leip.arg('gene')
@@ -139,14 +255,13 @@ def plot_frac(app, args):
 @leip.command
 def plot_count(app, args):
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        import pandas as pd
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-        import matplotlib.gridspec as gridspec
-        from matplotlib.path import Path
-        import seaborn as sns
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    import matplotlib.gridspec as gridspec
+    from matplotlib.path import Path
+    import seaborn as sns
 
     d = plot_get_data(app, args)
     title = ['nfj', 'count', d.gene]
@@ -162,10 +277,31 @@ def plot_count(app, args):
         lg.info("zscore normalized rows")
         
     plt.figure(figsize=(10,args.image_height))
+    
+    lg.info("plot")
+
+    plt.pcolormesh(d.nn.as_matrix(), cmap=plt.cm.viridis)
+    plt.colorbar()
     plt.title(" ".join(map(str, title)))
-    sns.heatmap(d.nn)
+
+    tmpl = d.template
+    tmpl = (tmpl / tmpl.max()) + len(d.nn.index) + 1
+    plt.plot(np.arange(len(d.nn.columns)), tmpl)
+    
+    if args.no_xaxis_labels:
+        lg.info("removing xaxis labels")
+        plt.xticks([])
+
+    plt.xlim(0, len(d.nn.columns))
+    plt.ylim(0, len(d.nn.index) + 2.5)
+    
+    plt.yticks(0.5 + np.arange(len(d.nn.index)+2),
+               list(d.nn.index) + ['', 'template'], fontsize=8)
+
     plt.tight_layout()
-    plt.savefig(".".join(map(str, title)) + '.png', dpi=200)
+    png = ".".join(map(str, title)) + '.png'
+    lg.info("save to: %s", png)
+    plt.savefig(png, dpi=200)
     
 
 @leip.arg('--db', default='nfj')
